@@ -30,16 +30,39 @@ st.set_page_config(layout='wide')
 # """
 #st.markdown(page_bg_color, unsafe_allow_html=True)
 
-uploaded_file = st.file_uploader("Upload your Excel file", type=["xlsx"])
+# Sidebar for data upload and parameter selection
+uploaded_file = st.sidebar.file_uploader("Upload your Excel or CSV file", type=["csv", "xlsx"])
 
+# Initialize data_long as None
+data_long = None
+
+# Check if a file has been uploaded
 if uploaded_file is not None:
-    # Read the uploaded Excel file
-    overall = pd.read_excel(uploaded_file, sheet_name='Sheet2')
-    df = pd.read_excel(uploaded_file, sheet_name='Sheet1')
+    # Handle CSV file
+    if uploaded_file.name.endswith('.csv'):
+        overall = pd.read_csv(uploaded_file, sheet_name='Sheet2')
+        df = pd.read_csv(uploaded_file, sheet_name='Sheet1')
+    # Handle Excel file
+    else:
+        overall = pd.read_excel(uploaded_file, sheet_name='Sheet2')
+        df = pd.read_excel(uploaded_file, sheet_name='Sheet1')
+
+    # Additional processing can go here, for example:
+    st.write("File uploaded successfully!")
+
 else:
-    overall = pd.read_excel('singapore9.xlsx', sheet_name='Sheet2')
-    df = pd.read_excel('singapore9.xlsx', sheet_name='Sheet1')
-    st.write("Please upload an Excel file.")
+    # Message to prompt the user to upload a file
+    st.write("Please upload a file to proceed.")
+    st.stop()
+        
+# if uploaded_file is not None:
+#     # Read the uploaded Excel file
+#     overall = pd.read_excel(uploaded_file, sheet_name='Sheet2')
+#     df = pd.read_excel(uploaded_file, sheet_name='Sheet1')
+# else:
+#     overall = pd.read_excel('singapore9.xlsx', sheet_name='Sheet2')
+#     df = pd.read_excel('singapore9.xlsx', sheet_name='Sheet1')
+#     st.write("Please upload an Excel file.")
 
 
 st.subheader("Overall Singapore Deadstock (Total Stock)")
