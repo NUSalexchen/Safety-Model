@@ -8,6 +8,8 @@ from matplotlib.ticker import ScalarFormatter
 from io import BytesIO
 import base64
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import uuid
 
 pd.set_option('display.float_format', lambda x: '%.0f' % x)
 st.set_page_config(layout='wide')
@@ -213,8 +215,9 @@ with col2:
         mime='text/csv',
     )
 
-import pandas as pd
-from datetime import datetime, timedelta
+
+# Calculate average daily consumption for each month
+
 
 pd.set_option('display.float_format', lambda x: '%.0f' % x)
 
@@ -390,12 +393,18 @@ df['days_diff'] = round(df['Current_Safety_Stock_bus_days']-df['Safety_Stock_bus
 df['Savings'] = df['Current_Safety_Stock'] - df['Proposed_Safety_Stock']
 df['Savings Deadstock'] = df['Deadstock'] - df['Current_Safety_Stock']
 df = df.rename(columns={'June_FC_Future':'Forecast_Jun','July_FC_Future':'Forecast_Jul','August_FC_Future':'Forecast_Aug'})
+## For Later Simulation
+df['Avg_Daily_Consumption_Mar'] = df['Actuals_Mar'] / 30
+df['Avg_Daily_Consumption_Apr'] = df['Actuals_Apr'] / 30
+df['Avg_Daily_Consumption_May'] = df['Actuals_May'] / 30
+df['Avg_Daily_Consumption_Jun'] = df['Actuals_Jun'] / 30
+df['Avg_Daily_Consumption_Jul'] = df['Forecast_Jul'] / 30
+df['Avg_Daily_Consumption_Aug'] = df['Forecast_Aug'] / 30
+df['Starting_Inventory'] = df['1-Mar']
 
-df[df['SKU']==10344029040300]
 df_sku=df[df['SKU']==SKU]
 
-import plotly.graph_objects as go
-import pandas as pd
+
 
 df_sku=df[df['SKU']==SKU]
 
@@ -464,7 +473,7 @@ for month in months + future_months:
     current_safety_stock_y.extend([df_sku[f'Current_Safety_Stock_{month}'].values[0]]*(end_index-start_index+1))
 
 # Create the figure
-from plotly.subplots import make_subplots
+
 # Create figure with secondary y-axis
 fig = make_subplots(specs=[[{"secondary_y": True}]])
 
@@ -703,14 +712,316 @@ df['Savings'] = df['Savings'].round(-3)
 df = df[df['Savings'].notna()]
 df['Savings Deadstock'] = df['Savings Deadstock'].round(-3)
 
+###################################
+#Daily Simulation with MOQ
+###################################
+
+
+# Create columns
+col1, col2, col3 = st.columns(3)
+
+sku_index = 0
+
+# Column 1: Input fields
+with col1:
+    starting_inventory = st.number_input("Enter Starting Inventory (Value):", value=int(df_sku['Starting_Inventory'].iloc[sku_index]))
+    sku_MOQ = st.number_input("Enter MOQ (Quantity):", value=int(df_sku['MOQ'].iloc[sku_index]))
+    col1_1, col1_2 = st.columns([1, 1.5])
+    with col1_1:
+        extension_months = st.selectbox("Extend Months:", options=[0, 1, 2, 3, 4, 5, 6], index=0, key='extension_dropdown')
+
+
+# Function to simulate inventory over a continuous period
+def simulate_inventory_continuous(starting_inventory, daily_consumption_list, safety_stock_list, moq, cogs):
+    inventory = starting_inventory
+    inventory_levels = []
+
+    for day in range(len(daily_consumption_list)):
+        inventory -= daily_consumption_list[day]
+        inventory_levels.append(inventory)
+
+        if inventory <= safety_stock_list[day]:
+            inventory += moq * cogs
+
+    return inventory_levels
+
+# Generate timelines for daily consumption and safety stocks for each SKU
+for i, row in df.iterrows():
+    daily_consumption_timeline = (
+        [row['Avg_Daily_Consumption_Mar']] * 30 +
+        [row['Avg_Daily_Consumption_Apr']] * 30 +
+        [row['Avg_Daily_Consumption_May']] * 30 +
+        [row['Avg_Daily_Consumption_Jun']] * 30 +
+        [row['Avg_Daily_Consumption_Jul']] * 30 +
+        [row['Avg_Daily_Consumption_Aug']] * 30
+    )
+
+    safety_stock_timeline_proposed = (
+        [row['Safety_Stock_Proposed_Mar']] * 30 +
+        [row['Safety_Stock_Proposed_Apr']] * 30 +
+        [row['Safety_Stock_Proposed_May']] * 30 +
+        [row['Safety_Stock_Proposed_Jun']] * 30 +
+        [row['Safety_Stock_Proposed_Jul']] * 30 +
+        [row['Safety_Stock_Proposed_Aug']] * 30
+    )
+
+    safety_stock_timeline_current = (
+        [row['Current_Safety_Stock_Mar']] * 30 +
+        [row['Current_Safety_Stock_Apr']] * 30 +
+        [row['Current_Safety_Stock_May']] * 30 +
+        [row['Current_Safety_Stock_Jun']] * 30 +
+        [row['Current_Safety_Stock_Jul']] * 30 +
+        [row['Current_Safety_Stock_Aug']] * 30
+    )
+
+    # Extend the simulation based on user input
+    if extension_months > 0:
+        daily_consumption_timeline += [row['Avg_Daily_Consumption_Aug']] * 30 * extension_months
+        safety_stock_timeline_proposed += [row['Safety_Stock_Proposed_Aug']] * 30 * extension_months
+        safety_stock_timeline_current += [row['Current_Safety_Stock_Aug']] * 30 * extension_months
+
+    # Run the simulation for each SKU
+    df.at[i, 'Inventory_Timeline_Proposed'] = simulate_inventory_continuous(
+        starting_inventory=row['Starting_Inventory'],
+        daily_consumption_list=daily_consumption_timeline,
+        safety_stock_list=safety_stock_timeline_proposed,
+        moq=row['MOQ'],
+        cogs=row['COGS']
+    )
+
+    df.at[i, 'Inventory_Timeline_Current'] = simulate_inventory_continuous(
+        starting_inventory=row['Starting_Inventory'],
+        daily_consumption_list=daily_consumption_timeline,
+        safety_stock_list=safety_stock_timeline_current,
+        moq=row['MOQ'],
+        cogs=row['COGS']
+    )
+
+# Calculate the average inventory for both proposed and current safety stock levels
+df['Average_Inventory_Proposed'] = df['Inventory_Timeline_Proposed'].apply(lambda x: sum(x) / len(x))
+df['Average_Inventory_Current'] = df['Inventory_Timeline_Current'].apply(lambda x: sum(x) / len(x))
+
+# Calculate quantities
+df['Average_Inventory_Proposed_Quantity'] = df['Average_Inventory_Proposed'] / df['COGS']
+df['Average_Inventory_Current_Quantity'] = df['Average_Inventory_Current'] / df['COGS']
+
+# Calculate the change in inventory
+df['Change in Inventory Value ($ SGD)'] = df['Average_Inventory_Current'] - df['Average_Inventory_Proposed']
+df['Change in Inventory Quantity (Cartons)'] = df['Average_Inventory_Current_Quantity'] - df['Average_Inventory_Proposed_Quantity']
+
+# Calculate the percentage reduction
+df['Percentage_Reduction'] = (df['Change in Inventory Quantity (Cartons)'] / df['Average_Inventory_Current_Quantity']) * 100
+
+# Visualization settings and layout
+extended_month_names = ['Oct', 'Nov', 'Dec', 'Jan', 'Feb', 'Mar']
+
+# Define y-axis max values for scaling
+yaxis_max = max(max(sku_data['Inventory_Timeline_Proposed']), max(sku_data['Inventory_Timeline_Current']))
+yaxis2_max = yaxis_max / sku_data['COGS']
+# Create a figure with secondary Y-axis
+fig = make_subplots(specs=[[{"secondary_y": True}]])
+sku_index = 0
+
+
+# Add the original traces (using the primary Y-axis)
+fig.add_trace(
+    go.Scatter(
+        x=list(range(1, len(inventory_timeline_proposed) + 1)),
+        y=inventory_timeline_proposed,
+        mode='lines',
+        name='Inventory Level (Proposed Safety Stock)',
+        line=dict(color='red', dash='dot'),
+    ),
+    secondary_y=False
+)
+
+fig.add_trace(
+    go.Scatter(
+        x=list(range(1, len(inventory_timeline_current) + 1)),
+        y=inventory_timeline_current,
+        mode='lines',
+        name='Inventory Level (Current Safety Stock)',
+        line=dict(color='blue', dash='dash'),
+    ),
+    secondary_y=False
+)
+
+fig.add_trace(
+    go.Scatter(
+        x=list(range(1, len(safety_stock_timeline_proposed) + 1)),
+        y=safety_stock_timeline_proposed,
+        mode='lines',
+        name='Proposed Safety Stock',
+        line=dict(color='red', width=2, dash='dashdot'),
+    ),
+    secondary_y=False
+)
+
+fig.add_trace(
+    go.Scatter(
+        x=list(range(1, len(safety_stock_timeline_current) + 1)),
+        y=safety_stock_timeline_current,
+        mode='lines',
+        name='Current Safety Stock',
+        line=dict(color='blue', width=2, dash='dashdot'),
+    ),
+    secondary_y=False
+)
+
+cogs_value = df_sku['COGS'].iloc[sku_index]  # Retrieve the COGS value for the selected SKU
+
+fig.add_trace(
+    go.Scatter(
+        x=list(range(1, len(inventory_timeline_proposed) + 1)),
+        y=[val / cogs_value for val in inventory_timeline_proposed],
+        mode='lines',
+        line=dict(color='rgba(0,0,0,0)'),
+        showlegend=False  # Hide from legend
+    ),
+    secondary_y=True
+)
+
+fig.add_trace(
+    go.Scatter(
+        x=list(range(1, len(inventory_timeline_current) + 1)),
+        y=[val / cogs_value for val in inventory_timeline_current],
+        mode='lines',
+        line=dict(color='rgba(0,0,0,0)'),
+        showlegend=False  # Hide from legend
+    ),
+    secondary_y=True
+)
+
+
+extended_month_names = ['Oct', 'Nov', 'Dec', 'Jan', 'Feb', 'Mar']
+
+
+yaxis_max = max(max(inventory_timeline_proposed), max(inventory_timeline_current))
+yaxis2_max = yaxis_max / cogs_value
+
+# Update the layout with Y-axis starting from 0
+fig.update_layout(
+    title=dict(
+        text=f'<span style="color:red;">{sku_name}</span><br><span>Daily Inventory Simulation with MOQ = {sku_MOQ} cartons </span>',
+        font=dict(family='Times New Roman', size=35),
+        x=0.1
+    ),
+    title_font_color="black",
+    xaxis=dict(
+        title='Date',
+        tickvals=[1, 30, 60, 90, 120, 150,180] + list(range(210, 210 + 30 * extension_months, 30)),
+        ticktext=['Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sept'] + extended_month_names[:extension_months],
+        tickfont=dict(color='black'),
+        color='black',
+        title_font_color="black"
+    ),
+    yaxis=dict(
+        title='Inventory Value (SGD)',
+        tickformat='~s',  # Use SI unit suffixes, such as "k" for thousands and "M" for millions
+        tickfont=dict(color='black'),
+        color='black',
+        title_font_color='black',
+        range=[0, yaxis_max]  # Ensure Y-axis starts from 0
+    ),
+    yaxis2=dict(
+        title='Inventory Quantity (Cartons)',  # Label this axis as quantity in units
+        tickformat='~s',  # Use SI unit suffixes
+        tickfont=dict(color='black'),
+        color='black',
+        title_font_color='black',
+        showgrid=False,
+        range=[0, yaxis2_max]  # Ensure secondary Y-axis starts from 0
+    ),
+    legend=dict(
+        title='Legend',
+        font=dict(color="black"),  # Set legend font color
+        title_font=dict(color="black")  # Set legend title font color
+    ),
+    showlegend=True,
+    width=1200,  # Adjust the width as needed
+    height=600,
+    plot_bgcolor='white',  # Set plot background to white
+    paper_bgcolor='white',
+    font=dict(
+        family="Courier New, monospace",
+        size=18,
+        color="black"  # Set the overall font color to black
+    )
+)
+
+# Calculate the average inventory for the current safety stock level
+average_inventory_current_value = sum(inventory_timeline_current) / len(inventory_timeline_current) 
+average_inventory_current = sum(inventory_timeline_current) / len(inventory_timeline_current) / cogs_value
+
+# Calculate the average inventory for the proposed safety stock level
+average_inventory_proposed_value = sum(inventory_timeline_proposed) / len(inventory_timeline_proposed) 
+average_inventory_proposed = sum(inventory_timeline_proposed) / len(inventory_timeline_proposed) / cogs_value
+
+
+# Calculate the percentage reduction
+if average_inventory_current != 0:
+    percentage_reduction = ((average_inventory_current - average_inventory_proposed) / average_inventory_current) * 100
+else:
+    percentage_reduction = 0  # Avoid division by zero
+
+ # Function to apply color formatting
+def color_change(val):
+        background_color = 'lightgreen' if float(val.replace(",", "")) > 0 else 'lightcoral'
+        return f'background-color: {background_color}; color: black;'
+
+data = {
+    "Metric": [
+        "Current Safety Stock Avg. Inventory",
+        "Proposed Safety Stock AInventory",
+        "Change in Inventory"
+    ],
+    "$ SGD": [
+        f"{average_inventory_current_value:,.0f}",
+        f"{average_inventory_proposed_value:,.0f}",
+        f"{average_inventory_current_value - average_inventory_proposed_value:,.0f}"
+    ],
+    "Quantity (Cartons)": [
+        f"{average_inventory_current:,.0f}",
+        f"{average_inventory_proposed:,.0f}",
+        f"{average_inventory_current - average_inventory_proposed:,.0f}"
+    ]
+}
+
+with col2:
+    # Create the main DataFrame with metrics as index
+    df_results = pd.DataFrame(data)
+    df_results.set_index("Metric", inplace=True)
+    st.write("### Inventory Comparison")
+    # Apply the color change to the "Change in Inventory" row
+    df_styled = df_results.style.applymap(color_change, subset=pd.IndexSlice["Change in Inventory", ["$ SGD", "Quantity (Cartons)"]])
+    
+    st.dataframe(df_styled)
+
+# Prepare the data for the percentage reduction DataFrame
+percentage_reduction_data = {
+    "Metric": ["Change in Inventory (%)"],
+    "Value": [f"{percentage_reduction:.0f}%"]
+}
+
+# Create the percentage reduction DataFrame
+df_percentage_reduction = pd.DataFrame(percentage_reduction_data)
+df_percentage_reduction.set_index("Metric", inplace=True)
+def color_reduction(val):
+    background_color = 'lightgreen' if percentage_reduction > 0 else 'lightcoral'
+    return f'background-color: {background_color}; color: black;'
+        
+with col3:
+    df_percentage_reduction_styled = df_percentage_reduction.style.applymap(color_reduction)
+    # Display the styled DataFrame
+    st.write("### Percentage Change")
+    st.dataframe(df_percentage_reduction_styled)
+    
+# Display the figure in Streamlit
+st.plotly_chart(fig, use_container_width=True)
+
 ##############################
 
-import streamlit as st
-import pandas as pd
-import numpy as np
-import scipy.stats as stats
-from streamlit import session_state as ss
-import uuid
+
 
 # Initialize the session state for the data editor key
 if 'dek' not in ss:
