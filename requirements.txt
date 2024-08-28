@@ -2,7 +2,5 @@ streamlit==1.22.0
 pandas==2.1.0
 numpy==1.25.0
 scipy==1.11.0
-forex-python==1.8
-requests==2.31.0
-plotly==5.15.0
 matplotlib==3.8.0
+plotly==5.15.0
